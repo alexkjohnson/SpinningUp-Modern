@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from torch.optim import Adam
-import gym
+import gymnasium as gym
 import time
 import spinup.algos.pytorch.ppo.core as core
 from spinup.utils.logx import EpochLogger
@@ -290,43 +290,52 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                      DeltaLossPi=(loss_pi.item() - pi_l_old),
                      DeltaLossV=(loss_v.item() - v_l_old))
 
-    # Prepare for interaction with environment
+    # Prepare for interaction with environment (Gymnasium API)
     start_time = time.time()
-    o, ep_ret, ep_len = env.reset(), 0, 0
+    o, _ = env.reset()
+    ep_ret, ep_len = 0, 0
 
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
         for t in range(local_steps_per_epoch):
             a, v, logp = ac.step(torch.as_tensor(o, dtype=torch.float32))
 
-            next_o, r, d, _ = env.step(a)
+            next_o, r, terminated, truncated, _ = env.step(a)
             ep_ret += r
             ep_len += 1
 
-            # save and log
+            # Save and log
             buf.store(o, a, r, v, logp)
             logger.store(VVals=v)
-            
-            # Update obs (critical!)
+
+            # Update observation
             o = next_o
 
-            timeout = ep_len == max_ep_len
-            terminal = d or timeout
-            epoch_ended = t==local_steps_per_epoch-1
+            timeout = ep_len >= max_ep_len or truncated
+            terminal = terminated or timeout
+            epoch_ended = t == local_steps_per_epoch - 1
 
             if terminal or epoch_ended:
-                if epoch_ended and not(terminal):
-                    print('Warning: trajectory cut off by epoch at %d steps.'%ep_len, flush=True)
-                # if trajectory didn't reach terminal state, bootstrap value target
+                if epoch_ended and not terminal:
+                    print(
+                        'Warning: trajectory cut off by epoch at %d steps.' % ep_len,
+                        flush=True
+                    )
+
+                # Bootstrap value if the trajectory was cut off,
+                # rather than ending in a true terminal state.
                 if timeout or epoch_ended:
                     _, v, _ = ac.step(torch.as_tensor(o, dtype=torch.float32))
                 else:
                     v = 0
+
                 buf.finish_path(v)
+
                 if terminal:
-                    # only save EpRet / EpLen if trajectory finished
                     logger.store(EpRet=ep_ret, EpLen=ep_len)
-                o, ep_ret, ep_len = env.reset(), 0, 0
+
+                o, _ = env.reset()
+                ep_ret, ep_len = 0, 0
 
 
         # Save model

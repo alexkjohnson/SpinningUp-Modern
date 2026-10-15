@@ -9,7 +9,12 @@ import json
 import joblib
 import shutil
 import numpy as np
-import tensorflow as tf
+
+try:
+    import tensorflow as tf
+except ImportError:
+    tf = None
+
 import torch
 import os.path as osp, time, atexit, os
 import warnings
@@ -56,6 +61,11 @@ def restore_tf_graph(sess, fpath):
         A dictionary mapping from keys to tensors in the computation graph
         loaded from ``fpath``. 
     """
+    if tf is None:
+        raise ImportError(
+            "TensorFlow is required for this TensorFlow-specific functionality."
+        )
+
     tf.saved_model.loader.load(
                 sess,
                 [tf.saved_model.tag_constants.SERVING],
@@ -209,6 +219,10 @@ class Logger:
             outputs (dict): A dictionary that maps from keys of your choice
                 to the outputs from your computation graph.
         """
+        if tf is None:
+            raise ImportError(
+                "TensorFlow is required for this TensorFlow-specific functionality."
+            )
         self.tf_saver_elements = dict(session=sess, inputs=inputs, outputs=outputs)
         self.tf_saver_info = {'inputs': {k:v.name for k,v in inputs.items()},
                               'outputs': {k:v.name for k,v in outputs.items()}}
