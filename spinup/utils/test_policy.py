@@ -5,7 +5,11 @@ import os
 import os.path as osp
 import torch
 import gymnasium as gym
+from gymnasium.wrappers import RecordVideo
 from spinup import EpochLogger
+import os
+# Force MuJoCo to use a robust offscreen rendering backend for video recording
+os.environ["MUJOCO_GL"] = "egl"  # or "osmesa" if egl is unavailable
 
 
 def load_policy_and_env(fpath, itr='last', deterministic=False, render_mode=None):
@@ -28,37 +32,56 @@ def load_policy_and_env(fpath, itr='last', deterministic=False, render_mode=None
     get_action = load_pytorch_policy(fpath, itr, deterministic)
 
     env = None
+    env_name = None
 
-    # 1. If rendering is requested, prioritize re-creating via gym.make using config.json 
-    # so that render_mode='human' is correctly configured from the start.
-    if render_mode is not None:
+    # 1. Try reading env name from config.json ('env' is standard in Spinning Up)
+    try:
+        config_path = osp.join(fpath, 'config.json')
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+            env_val = config.get('env') or config.get('env_name')
+            if isinstance(env_val, str):
+                env_name = env_val
+    except Exception as e:
+        print(f"Could not read config.json: {e}")
+
+    # 2. If config didn't give a string name, inspect the pickled vars file
+    if env_name is None:
         try:
-            config_path = osp.join(fpath, 'config.json')
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                env_name = config.get('env_name')
-                if env_name:
-                    print(f"Re-creating environment '{env_name}' with render_mode='{render_mode}'...")
-                    env = gym.make(env_name, render_mode=render_mode)
+            state = joblib.load(osp.join(fpath, 'vars'+itr+'.pkl'))
+            raw_env = state.get('env')
+            if raw_env is not None:
+                if hasattr(raw_env, 'spec') and raw_env.spec is not None and raw_env.spec.id:
+                    env_name = raw_env.spec.id
+                elif hasattr(raw_env, 'unwrapped') and hasattr(raw_env.unwrapped, 'spec') and raw_env.unwrapped.spec is not None:
+                    env_name = raw_env.unwrapped.spec.id
+                else:
+                    # Fallback based on class name inspection
+                    class_name = raw_env.__class__.__name__
+                    if 'HalfCheetah' in class_name:
+                        env_name = 'HalfCheetah-v5'
+                    else:
+                        env_name = 'HalfCheetah-v5'  # Default fallback for your Mujoco experiments
         except Exception as e:
-            print(f"Could not recreate environment from config: {e}")
+            pass
 
-    # 2. Fallback to loading environment from pickle if config creation failed or render_mode is None
+    # 3. Instantiate the environment via gym.make with the requested render_mode
+    if env_name is not None:
+        try:
+            print(f"Re-creating environment '{env_name}' with render_mode='{render_mode}'...")
+            env = gym.make(env_name, render_mode=render_mode)
+        except Exception as e:
+            print(f"Could not make environment '{env_name}': {e}")
+
+    # 4. Final fallback if gym.make failed
     if env is None:
         try:
             state = joblib.load(osp.join(fpath, 'vars'+itr+'.pkl'))
             env = state['env']
-        except:
-            pass
-
-    # 3. Last resort fallback if env still has no render_mode but we need one
-    if env is not None and hasattr(env, 'render_mode') and env.render_mode is None and render_mode is not None:
-        try:
-            env_id = env.spec.id if env.spec else None
-            if env_id:
-                env = gym.make(env_id, render_mode=render_mode)
-        except:
-            pass
+            if render_mode is not None and hasattr(env, 'render_mode'):
+                env.render_mode = render_mode
+        except Exception as e:
+            print(f"Could not load environment from pickle: {e}")
 
     return env, get_action
 
@@ -111,6 +134,10 @@ def run_policy(env, get_action, max_ep_len=None, num_episodes=100, render=True):
     logger.log_tabular('EpLen', average_only=True)
     logger.dump_tabular()
 
+    # Ensure environment (and video writer wrapper) closes and flushes to disk
+    if env is not None:
+        env.close()
+
 
 if __name__ == '__main__':
     import argparse
@@ -119,14 +146,28 @@ if __name__ == '__main__':
     parser.add_argument('--len', '-l', type=int, default=0)
     parser.add_argument('--episodes', '-n', type=int, default=100)
     parser.add_argument('--norender', '-nr', action='store_true')
+    parser.add_argument('--record', '-r', action='store_true', help='Record video of test episodes')
+    parser.add_argument('--video-dir', type=str, default='videos', help='Directory to save recorded videos')
     parser.add_argument('--itr', '-i', type=int, default=-1)
     parser.add_argument('--deterministic', '-d', action='store_true')
     args = parser.parse_args()
 
-    render_mode = None if args.norender else 'human'
+    # Determine render mode based on flags
+    if args.record:
+        render_mode = 'rgb_array'
+    elif args.norender:
+        render_mode = None
+    else:
+        render_mode = 'human'
 
     env, get_action = load_policy_and_env(args.fpath, 
                                           args.itr if args.itr >=0 else 'last',
                                           args.deterministic,
                                           render_mode=render_mode)
-    run_policy(env, get_action, args.len, args.episodes, not(args.norender))
+
+    # Apply video recording wrapper if requested
+    if args.record and env is not None:
+        print(f"Recording videos to '{args.video_dir}' folder...")
+        env = RecordVideo(env, video_folder=args.video_dir, episode_trigger=lambda episode_id: episode_id < args.episodes)
+
+    run_policy(env, get_action, args.len, args.episodes, render=(not args.norender and not args.record))
