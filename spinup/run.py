@@ -3,12 +3,11 @@ from spinup.user_config import DEFAULT_BACKEND
 from spinup.utils.run_utils import ExperimentGrid
 from spinup.utils.serialization_utils import convert_json
 import argparse
-import gym
+import gymnasium as gym
 import json
 import os, subprocess, sys
 import os.path as osp
 import string
-import tensorflow as tf
 import torch
 from copy import deepcopy
 from textwrap import dedent
@@ -33,10 +32,10 @@ BASE_ALGO_NAMES = ['vpg', 'trpo', 'ppo', 'ddpg', 'td3', 'sac']
 
 
 def add_with_backends(algo_list):
-    # helper function to build lists with backend-specific function names
+    # helper function to build lists with PyTorch backend-specific function names
     algo_list_with_backends = deepcopy(algo_list)
     for algo in algo_list:
-        algo_list_with_backends += [algo + '_tf1', algo + '_pytorch']
+        algo_list_with_backends += [algo + '_pytorch']
     return algo_list_with_backends
 
 
@@ -151,23 +150,18 @@ def parse_and_execute_grid_search(cmd, args):
         assert cmd in add_with_backends(MPI_COMPATIBLE_ALGOS), \
             friendly_err("This algorithm can't be run with num_cpu > 1.")
 
-    # Special handling for environment: make sure that env_name is a real,
-    # registered gym environment.
-    valid_envs = [e.id for e in list(gym.envs.registry.all())]
+    # Special handling for environment (Gymnasium registry lookup).
+    valid_envs = list(gym.envs.registry.keys())
     assert 'env_name' in arg_dict, \
         friendly_err("You did not give a value for --env_name! Add one and try again.")
     for env_name in arg_dict['env_name']:
         err_msg = dedent("""
 
-            %s is not registered with Gym.
+            %s is not registered with Gymnasium.
 
             Recommendations:
-
-                * Check for a typo (did you include the version tag?)
-
-                * View the complete list of valid Gym environments at
-
-                    https://gym.openai.com/envs/
+            - Check for a typo (did you include the version tag?)
+            - Ensure gymnasium extra environments are installed.
 
             """%env_name)
         assert env_name in valid_envs, err_msg
@@ -222,7 +216,7 @@ if __name__ == '__main__':
             FYI: When running an algorithm, any keyword argument to the
             algorithm function can be used as a flag, eg
 
-            \tpython -m spinup.run ppo --env HalfCheetah-v2 --clip_ratio 0.1
+            \tpython -m spinup.run ppo --env HalfCheetah-v5 --clip_ratio 0.1
 
             If you need a quick refresher on valid kwargs, get the docstring
             with
