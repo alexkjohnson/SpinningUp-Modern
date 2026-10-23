@@ -3,8 +3,8 @@ import torch.nn as nn
 from torch.distributions.categorical import Categorical
 from torch.optim import Adam
 import numpy as np
-import gym
-from gym.spaces import Discrete, Box
+import gymnasium as gym
+from gymnasium.spaces import Discrete, Box
 
 def mlp(sizes, activation=nn.Tanh, output_activation=nn.Identity):
     # Build a feedforward neural network.
@@ -14,11 +14,11 @@ def mlp(sizes, activation=nn.Tanh, output_activation=nn.Identity):
         layers += [nn.Linear(sizes[j], sizes[j+1]), act()]
     return nn.Sequential(*layers)
 
-def train(env_name='CartPole-v0', hidden_sizes=[32], lr=1e-2, 
+def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2, 
           epochs=50, batch_size=5000, render=False):
 
     # make environment, check spaces, get obs / act dims
-    env = gym.make(env_name)
+    env = gym.make(env_name, render_mode="human" if render else None)
     assert isinstance(env.observation_space, Box), \
         "This example only works for envs with continuous state spaces."
     assert isinstance(env.action_space, Discrete), \
@@ -57,7 +57,7 @@ def train(env_name='CartPole-v0', hidden_sizes=[32], lr=1e-2,
         batch_lens = []         # for measuring episode lengths
 
         # reset episode-specific variables
-        obs = env.reset()       # first obs comes from starting distribution
+        obs, info = env.reset()       # first obs comes from starting distribution
         done = False            # signal from environment that episode is over
         ep_rews = []            # list for rewards accrued throughout ep
 
@@ -76,7 +76,8 @@ def train(env_name='CartPole-v0', hidden_sizes=[32], lr=1e-2,
 
             # act in the environment
             act = get_action(torch.as_tensor(obs, dtype=torch.float32))
-            obs, rew, done, _ = env.step(act)
+            obs, rew, terminated, truncated , _ = env.step(act)
+            done = terminated or truncated
 
             # save action, reward
             batch_acts.append(act)
@@ -92,7 +93,8 @@ def train(env_name='CartPole-v0', hidden_sizes=[32], lr=1e-2,
                 batch_weights += [ep_ret] * ep_len
 
                 # reset episode-specific variables
-                obs, done, ep_rews = env.reset(), False, []
+                obs, info = env.reset()
+                done, ep_rews = False, []
 
                 # won't render again this epoch
                 finished_rendering_this_epoch = True
@@ -103,8 +105,8 @@ def train(env_name='CartPole-v0', hidden_sizes=[32], lr=1e-2,
 
         # take a single policy gradient update step
         optimizer.zero_grad()
-        batch_loss = compute_loss(obs=torch.as_tensor(batch_obs, dtype=torch.float32),
-                                  act=torch.as_tensor(batch_acts, dtype=torch.int32),
+        batch_loss = compute_loss(obs=torch.as_tensor(np.array(batch_obs), dtype=torch.float32),
+                                  act=torch.as_tensor(batch_acts, dtype=torch.int64),
                                   weights=torch.as_tensor(batch_weights, dtype=torch.float32)
                                   )
         batch_loss.backward()
@@ -115,12 +117,14 @@ def train(env_name='CartPole-v0', hidden_sizes=[32], lr=1e-2,
     for i in range(epochs):
         batch_loss, batch_rets, batch_lens = train_one_epoch()
         print('epoch: %3d \t loss: %.3f \t return: %.3f \t ep_len: %.3f'%
-                (i, batch_loss, np.mean(batch_rets), np.mean(batch_lens)))
+                (i, batch_loss.item(), np.mean(batch_rets), np.mean(batch_lens)))
+
+    env.close()
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env_name', '--env', type=str, default='CartPole-v0')
+    parser.add_argument('--env_name', '--env', type=str, default='CartPole-v1')
     parser.add_argument('--render', action='store_true')
     parser.add_argument('--lr', type=float, default=1e-2)
     args = parser.parse_args()
