@@ -248,7 +248,7 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         loss_pi.backward()
         pi_optimizer.step()
 
-        # Unfreeze Q-networks so you can optimize it at next DDPG step.
+        # Unfreeze Q-networks so you can optimize them at the next SAC update.
         for p in q_params:
             p.requires_grad = True
 
