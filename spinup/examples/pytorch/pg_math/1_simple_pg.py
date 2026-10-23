@@ -57,7 +57,7 @@ def train(env_name='CartPole-v1', hidden_sizes=[32], lr=1e-2,
         batch_lens = []         # for measuring episode lengths
 
         # reset episode-specific variables
-        obs, info = env.reset()       # first obs comes from starting distribution
+        obs, info = env.reset() # first obs comes from starting distribution
         done = False            # signal from environment that episode is over
         ep_rews = []            # list for rewards accrued throughout ep
 
