@@ -86,7 +86,8 @@ class Logger:
     state of a training run, and the trained model.
     """
 
-    def __init__(self, output_dir=None, output_fname='progress.txt', exp_name=None):
+    def __init__(self, output_dir=None, output_fname='progress.txt', 
+                exp_name=None, epoch_callback=None):
         """
         Initialize a Logger.
 
@@ -104,6 +105,9 @@ class Logger:
                 will know to group them. (Use case: if you run the same
                 hyperparameter configuration with multiple random seeds, you
                 should give them all the same ``exp_name``.)
+
+            epoch_callback (callable or None): Optional function called
+                with the completed epoch's metrics.
         """
         if proc_id()==0:
             self.output_dir = output_dir or "/tmp/experiments/%i"%int(time.time())
@@ -121,6 +125,7 @@ class Logger:
         self.log_headers = []
         self.log_current_row = {}
         self.exp_name = exp_name
+        self.epoch_callback = epoch_callback
 
     def log(self, msg, color='green'):
         """Print a colorized message to stdout."""
@@ -311,8 +316,16 @@ class Logger:
                     self.output_file.write("\t".join(self.log_headers)+"\n")
                 self.output_file.write("\t".join(map(str,vals))+"\n")
                 self.output_file.flush()
+        if self.epoch_callback is not None and proc_id() == 0:
+            try:
+                self.epoch_callback(self.log_current_row.copy())
+            except Exception as e:
+                warnings.warn(
+                    f"Epoch callback failed: {e}",
+                    RuntimeWarning
+                )
         self.log_current_row.clear()
-        self.first_row=False
+        self.first_row = False
 
 class EpochLogger(Logger):
     """
