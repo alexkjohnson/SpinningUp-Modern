@@ -46,7 +46,7 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, 
         polyak=0.995, lr=1e-3, alpha=0.2, batch_size=100, start_steps=10000, 
         update_after=1000, update_every=50, num_test_episodes=10, max_ep_len=1000, 
-        logger_kwargs=dict(), save_freq=1):
+        logger_kwargs=dict(), save_freq=1, auto_alpha=False):
     """
     Soft Actor-Critic (SAC)
 
@@ -142,6 +142,9 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         save_freq (int): How often (in terms of gap between epochs) to save
             the current policy and value function.
 
+        auto_alpha (bool): If True, automatically tune the entropy
+            temperature alpha. If False, use the fixed alpha value.
+
     """
 
     logger = EpochLogger(**logger_kwargs)
@@ -160,6 +163,12 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # Create actor-critic module and target networks
     ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
     ac_targ = deepcopy(ac)
+
+    # Set up automatic entropy temperature tuning, if enabled
+    if auto_alpha:
+        target_entropy = -float(act_dim)
+        log_alpha = torch.tensor(np.log(alpha), dtype=torch.float32, requires_grad=True)
+        alpha_optimizer = Adam([log_alpha], lr=lr)
 
     # Freeze target networks with respect to optimizers (only update via polyak averaging)
     for p in ac_targ.parameters():
@@ -191,7 +200,8 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             q1_pi_targ = ac_targ.q1(o2, a2)
             q2_pi_targ = ac_targ.q2(o2, a2)
             q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
-            backup = r + gamma * (1 - d) * (q_pi_targ - alpha * logp_a2)
+            current_alpha = log_alpha.exp().detach() if auto_alpha else alpha
+            backup = r + gamma * (1 - d) * (q_pi_targ - current_alpha * logp_a2)
 
         # MSE loss against Bellman backup
         loss_q1 = ((q1 - backup)**2).mean()
@@ -213,12 +223,13 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         q_pi = torch.min(q1_pi, q2_pi)
 
         # Entropy-regularized policy loss
-        loss_pi = (alpha * logp_pi - q_pi).mean()
+        current_alpha = log_alpha.exp().detach() if auto_alpha else alpha
+        loss_pi = (current_alpha * logp_pi - q_pi).mean()
 
         # Useful info for logging
         pi_info = dict(LogPi=logp_pi.detach().numpy())
 
-        return loss_pi, pi_info
+        return loss_pi, pi_info, logp_pi
 
     # Set up optimizers for policy and q-function
     pi_optimizer = Adam(ac.pi.parameters(), lr=lr)
@@ -244,9 +255,21 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
         # Next run one gradient descent step for pi.
         pi_optimizer.zero_grad()
-        loss_pi, pi_info = compute_loss_pi(data)
+        loss_pi, pi_info, logp_pi = compute_loss_pi(data)
         loss_pi.backward()
         pi_optimizer.step()
+        # Update entropy temperature, if enabled
+        if auto_alpha:
+            alpha_loss = -(log_alpha * (logp_pi.detach() + target_entropy)).mean()
+
+            alpha_optimizer.zero_grad()
+            alpha_loss.backward()
+            alpha_optimizer.step()
+
+            logger.store(
+                Alpha=log_alpha.exp().item(),
+                LossAlpha=alpha_loss.item()
+            )
 
         # Unfreeze Q-networks so you can optimize them at the next SAC update.
         for p in q_params:
@@ -349,6 +372,9 @@ def sac(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             logger.log_tabular('LogPi', with_min_and_max=True)
             logger.log_tabular('LossPi', average_only=True)
             logger.log_tabular('LossQ', average_only=True)
+            if auto_alpha:
+                logger.log_tabular('Alpha', average_only=True)
+                logger.log_tabular('LossAlpha', average_only=True)
             logger.log_tabular('Time', time.time()-start_time)
             logger.dump_tabular()
 
@@ -362,6 +388,8 @@ if __name__ == '__main__':
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--exp_name', type=str, default='sac')
+    parser.add_argument('--auto-alpha', action='store_true',
+                help='Automatically tune entropy temperature')
     args = parser.parse_args()
 
     from spinup.utils.run_utils import setup_logger_kwargs
@@ -372,4 +400,4 @@ if __name__ == '__main__':
     sac(lambda : gym.make(args.env), actor_critic=core.MLPActorCritic,
         ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), 
         gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-        logger_kwargs=logger_kwargs)
+        logger_kwargs=logger_kwargs, auto_alpha=args.auto_alpha)
