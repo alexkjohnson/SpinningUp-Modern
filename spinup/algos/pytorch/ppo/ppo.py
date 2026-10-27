@@ -90,7 +90,8 @@ class PPOBuffer:
 def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0, 
         steps_per_epoch=4000, epochs=50, gamma=0.99, clip_ratio=0.2, pi_lr=3e-4,
         vf_lr=1e-3, train_pi_iters=80, train_v_iters=80, lam=0.97, max_ep_len=1000,
-        target_kl=0.01, logger_kwargs=dict(), save_freq=10, normalize_advantages=True):
+        target_kl=0.01, logger_kwargs=dict(), save_freq=10,
+        normalize_advantages=True, anneal_lr=False):
     """
     Proximal Policy Optimization (by clipping), 
 
@@ -300,6 +301,15 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     # Main loop: collect experience in env and update/log each epoch
     for epoch in range(epochs):
+
+        if anneal_lr:
+            frac = 1.0 - (epoch / epochs)
+            lr = pi_lr * frac
+            for param_group in pi_optimizer.param_groups:
+                param_group['lr'] = lr
+
+        logger.store(PiLR=pi_optimizer.param_groups[0]['lr'])
+
         for t in range(local_steps_per_epoch):
             a, v, logp = ac.step(torch.as_tensor(o, dtype=torch.float32))
 
@@ -354,6 +364,7 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         logger.log_tabular('EpLen', average_only=True)
         logger.log_tabular('VVals', with_min_and_max=True)
         logger.log_tabular('TotalEnvInteracts', (epoch+1)*steps_per_epoch)
+        logger.log_tabular('PiLR', average_only=True)
         logger.log_tabular('LossPi', average_only=True)
         logger.log_tabular('LossV', average_only=True)
         logger.log_tabular('DeltaLossPi', average_only=True)
