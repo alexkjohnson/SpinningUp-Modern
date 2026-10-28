@@ -88,7 +88,7 @@ class PPOBuffer:
 def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0, 
         steps_per_epoch=4000, epochs=50, gamma=0.99, clip_ratio=0.2, pi_lr=3e-4,
         vf_lr=1e-3, train_pi_iters=80, train_v_iters=80, lam=0.97, max_ep_len=1000,
-        target_kl=0.01, logger_kwargs=dict(), save_freq=10):
+        target_kl=0.01, logger_kwargs=dict(), save_freq=10, num_test_episodes=10):
     """
     Proximal Policy Optimization (by clipping), 
 
@@ -190,6 +190,9 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         save_freq (int): How often (in terms of gap between epochs) to save
             the current policy and value function.
 
+        num_test_episodes (int): Number of episodes used to evaluate the
+            policy at the end of each epoch.
+
     """
 
     # Special function to avoid certain slowdowns from PyTorch + MPI combo.
@@ -204,8 +207,8 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    # Instantiate environment
-    env = env_fn()
+    # Instantiate training and test environments
+    env, test_env = env_fn(), env_fn()
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape
 
@@ -222,6 +225,31 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # Set up experience buffer
     local_steps_per_epoch = int(steps_per_epoch / num_procs())
     buf = PPOBuffer(obs_dim, act_dim, local_steps_per_epoch, gamma, lam)
+
+    # Evaluate the current policy without collecting training data.
+    def test_agent():
+        for _ in range(num_test_episodes):
+            o, _ = test_env.reset()
+            ep_ret, ep_len = 0, 0
+            terminated, truncated = False, False
+
+            while not (terminated or truncated or ep_len >= max_ep_len):
+                obs_tensor = torch.as_tensor(o, dtype=torch.float32)
+                a = ac.act_deterministic(obs_tensor)
+
+                # Keep continuous actions within the environment's bounds.
+                if hasattr(test_env.action_space, 'low'):
+                    a = np.clip(
+                        a,
+                        test_env.action_space.low,
+                        test_env.action_space.high
+                    )
+
+                o, r, terminated, truncated, _ = test_env.step(a)
+                ep_ret += r
+                ep_len += 1
+
+            logger.store(TestEpRet=ep_ret, TestEpLen=ep_len)
 
     # Set up function for computing PPO policy loss
     def compute_loss_pi(data):
@@ -345,10 +373,15 @@ def ppo(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # Perform PPO update!
         update()
 
+        # Evaluate the updated policy
+        test_agent()
+
         # Log info about epoch
         logger.log_tabular('Epoch', epoch)
         logger.log_tabular('EpRet', with_min_and_max=True)
         logger.log_tabular('EpLen', average_only=True)
+        logger.log_tabular('TestEpRet', with_min_and_max=True)
+        logger.log_tabular('TestEpLen', average_only=True)
         logger.log_tabular('VVals', with_min_and_max=True)
         logger.log_tabular('TotalEnvInteracts', (epoch+1)*steps_per_epoch)
         logger.log_tabular('LossPi', average_only=True)

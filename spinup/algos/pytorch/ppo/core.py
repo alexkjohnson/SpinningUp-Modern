@@ -133,3 +133,16 @@ class MLPActorCritic(nn.Module):
 
     def act(self, obs):
         return self.step(obs)[0]
+
+    def act_deterministic(self, obs):
+        with torch.no_grad():
+            pi = self.pi._distribution(obs)
+
+            if isinstance(pi, Normal):
+                a = pi.mean
+            elif isinstance(pi, Categorical):
+                a = pi.probs.argmax(dim=-1)
+            else:
+                raise TypeError(f"Unsupported distribution: {type(pi)}")
+
+        return a.numpy()
